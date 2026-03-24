@@ -100,7 +100,9 @@ app.post("/api/stt", upload.single("audio"), async (req, res) => {
         ContentType: "audio/webm",
       })
     );
-
+//AWAIT ESPERA QEU SE CREE EL JOB
+// NO ESPERA QUE ESTE EL TEXTO
+// CUANDO ESTA LINEA TERMINA TERMINA EL JOB ES INPROGRES
     await transcribe.send(
       new StartTranscriptionJobCommand({
         TranscriptionJobName: jobName,
@@ -113,7 +115,8 @@ app.post("/api/stt", upload.single("audio"), async (req, res) => {
     );
 
     let transcriptUri; // (máx 15s)
-
+//SI VAMOS A RECOGER EL TRABAJO NO ESTA TODAVIA
+// ES NECESARIO PROMISE PORQQUE EL JOB SE HA CREADO CORRECTAMETNE PERO EL TEXTO NO
     for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 1000));
 
