@@ -1,17 +1,56 @@
 services:
-  backend:
+  # 1. Tu servidor original de Node.js
+  node_backend:
     build:
-      context: ./backend
+      context: ./backend/node_app
       dockerfile: Dockerfile
     ports:
       - "3001:3001"
     environment:
       - NODE_ENV=production
       - PORT=3001
+      - AI_SERVICE_URL=http://ai_service:8000  # Para que Node sepa dónde está Python
     restart: unless-stopped
+    depends_on:
+      - ai_service
+
+  # 2. Tu nuevo servicio de IA (Python/FastAPI)
+  ai_service:
+    build:
+      context: ./backend/ai_service
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434        # Conexión flexible que configuramos en main.py
+      - MODEL_NAME=nikko-ia                   # El nombre de tu modelo personalizado
+    restart: unless-stopped
+    depends_on:
+      - ollama
+
+  # 3. El servidor de Ollama
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
     volumes:
-      - ./backend:/app
-    
+      - ./ollama_data:/root/.ollama
+      - ./ai_config:/ai_config
+    restart: unless-stopped
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434 
+      - OLLAMA_ORIGINS=*
+    # Si tienes una tarjeta gráfica NVIDIA, descomenta las siguientes líneas:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # 4. Tu Frontend
   frontend:
     build:
       context: ./frontend
@@ -19,5 +58,5 @@ services:
     ports:
       - "8080:80"
     depends_on:
-      - backend
+      - node_backend
     restart: unless-stopped

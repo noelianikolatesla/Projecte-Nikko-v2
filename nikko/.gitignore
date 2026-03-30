@@ -29,3 +29,28 @@ dist-ssr
 backend/.env
 nikko/backend/.env
 
+# --- Extensiones para la Nueva Estructura (Python & AI) ---
+
+# Python (Caché y entornos virtuales)
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/.venv/
+venv/
+ENV/
+
+# Modelos de IA y Ollama (CRÍTICO: No subir pesos pesados)
+**/ollama_data/
+**/models/
+*.bin
+*.gguf
+*.pth
+*.safetensors
+*.onnx
+
+# Dataset de entrenamiento (si llegas a tener carpetas de datos)
+**/datasets/
+*.csv
+*.jsonl
+!ai_service/views.json # Mantén este si es necesario para tu lógica
+
