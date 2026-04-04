@@ -1,5 +1,5 @@
 services:
-  # 1. Tu servidor original de Node.js
+  # 1. Servidor Node.js
   node_backend:
     build:
       context: ./backend/node_app
@@ -9,12 +9,12 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
-      - AI_SERVICE_URL=http://ai_service:8000  # Para que Node sepa dónde está Python
+      - AI_SERVICE_URL=http://ai_service:8000
     restart: unless-stopped
     depends_on:
       - ai_service
 
-  # 2. Tu nuevo servicio de IA (Python/FastAPI)
+  # 2. Servicio de IA (Python/FastAPI)
   ai_service:
     build:
       context: ./backend/ai_service
@@ -22,13 +22,16 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - OLLAMA_HOST=http://ollama:11434        # Conexión flexible que configuramos en main.py
-      - MODEL_NAME=nikko-ia                   # El nombre de tu modelo personalizado
+      - OLLAMA_HOST=http://ollama:11434
+      - MODEL_NAME=nikko-ia
+      - MONGODB_URL=mongodb://mongo:27017
+      - MONGODB_DB=nikko
     restart: unless-stopped
     depends_on:
       - ollama
+      - mongo
 
-  # 3. El servidor de Ollama
+  # 3. Servidor de Ollama
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -39,18 +42,20 @@ services:
       - ./ai_config:/ai_config
     restart: unless-stopped
     environment:
-      - OLLAMA_HOST=0.0.0.0:11434 
+      - OLLAMA_HOST=0.0.0.0:11434
       - OLLAMA_ORIGINS=*
-    # Si tienes una tarjeta gráfica NVIDIA, descomenta las siguientes líneas:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
 
-  # 4. Tu Frontend
+  # 4. MongoDB
+  mongo:
+    image: mongo:latest
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./mongo_data:/data/db
+    restart: unless-stopped
+
+  # 5. Frontend
   frontend:
     build:
       context: ./frontend
