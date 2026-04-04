@@ -174,9 +174,9 @@ def llamar_ollama(prompt: str, temperature: float = 0.3, timeout: int = 30) -> s
             detail="Error con el modelo IA"
         )
 
-# -------------------------
-# CLASIFICADOR 1–5
-# -------------------------
+# ------------------------------------------------
+# CLASIFICADOR 1–5 / no usa agentes solo clasifica
+# ------------------------------------------------
 def clasificar_nivel(texto: str) -> str:
     prompt = f"""
 Clasifica el siguiente mensaje en nivel de riesgo:
@@ -196,7 +196,7 @@ Mensaje:
 """
 
     try:
-        resultado = llamar_ollama(prompt, temperature=0, timeout=15)
+        resultado = llamar_ollama(prompt, temperature=0, timeout=30)
 
         if not resultado:
             return "1"
@@ -270,7 +270,7 @@ def chat(data: Prompt):
     # Guardar historial
     HISTORIAL.append({"user": texto})
 
-    # 1. Clasificar riesgo
+    # 1. Clasificar riesgo del usuario
     nivel = clasificar_nivel(texto)
     print("Nivel detectado:", nivel)
 
