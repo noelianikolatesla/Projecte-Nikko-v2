@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@aws-sdk/client-transcribe-streaming": "^3.975.0",
+    "websocket": "^1.0.35"
+  }
+}
