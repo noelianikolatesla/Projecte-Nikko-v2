@@ -307,6 +307,8 @@ def home():
 @app.post("/chat")
 def chat(data: Prompt, request: Request):
     texto = data.prompt.strip()
+    print("texto recibido:", texto)
+    
 
     if not texto:
         raise HTTPException(status_code=400, detail="Prompt vacío")
@@ -315,9 +317,11 @@ def chat(data: Prompt, request: Request):
     print("Nivel detectado:", nivel)
 
     respuesta = generar_respuesta(nivel, texto)
+    print("Respuesta generada:", respuesta)
 
     try:
         mongo_id = guardar_interaccion(request, texto, respuesta, nivel)
+        print("Interacción guardada en Mongo con ID:", mongo_id)
     except Exception as e:
         print("Error guardando en Mongo:", e)
         raise HTTPException(status_code=500, detail="Error guardando la interacción en MongoDB")
@@ -329,3 +333,21 @@ def chat(data: Prompt, request: Request):
             "mongo_id": mongo_id
         }
     }
+
+
+
+# endpoint grafana
+@app.get("/grafana/interacciones")
+def grafana_interacciones(request: Request):
+
+    datos = list(request.app.mongodb.interacciones.find())
+
+    resultado = []
+
+    for item in datos:
+        resultado.append({
+            "time": int(item["created_at"].timestamp() * 1000),
+            "nivel": int(item["nivel_detectado"])
+        })
+
+    return resultado
