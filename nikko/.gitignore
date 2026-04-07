@@ -61,6 +61,10 @@ ENV/
 *.safetensors
 *.onnx
 
+# Datos de MongoDB
+mongo_data/
+**/mongo_data/
+
 # Dataset de entrenamiento (si llegas a tener carpetas de datos)
 **/datasets/
 *.csv

@@ -1,5 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
+from pymongo import MongoClient
+from datetime import datetime, timezone
 import requests
 import os
 
@@ -13,8 +15,31 @@ app = FastAPI()
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 MODEL_NAME = os.getenv("MODEL_NAME", "nikko-ia")
 
+# Mongo
+# En Docker:  mongodb://mongo:27017
+# En local:   mongodb://localhost:27017
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+MONGODB_DB = os.getenv("MONGODB_DB", "nikko")
+
 # Endpoint real de generación de Ollama
 OLLAMA_URL = f"{OLLAMA_HOST}/api/generate"
+
+
+# -------------------------
+# CONEXIÓN A MONGO
+# -------------------------
+@app.on_event("startup")
+def startup_db():
+    app.mongodb_client = MongoClient(MONGODB_URL)
+    app.mongodb = app.mongodb_client[MONGODB_DB]
+    print(f"Conectado a MongoDB en {MONGODB_URL}, base de datos: {MONGODB_DB}")
+
+
+@app.on_event("shutdown")
+def shutdown_db():
+    app.mongodb_client.close()
+    print("Conexión a MongoDB cerrada")
+
 
 # -------------------------
 # MODELO INPUT
@@ -22,15 +47,10 @@ OLLAMA_URL = f"{OLLAMA_HOST}/api/generate"
 class Prompt(BaseModel):
     prompt: str
 
-# -------------------------
-# HISTORIAL (demo simple)
-# -------------------------
-HISTORIAL = []
 
 # -------------------------
 # AGENTES 5 NIVELES
 # -------------------------
-
 AGENTE_NIVEL_1 = """
 Eres un asistente especializado en la prevención del acoso escolar, actuando como el primer nivel de respuesta ante situaciones leves.
 
@@ -149,6 +169,7 @@ INSTRUCCIONES OBLIGATORIAS:
 - No inventes acciones técnicas que el sistema no esté ejecutando realmente
 """
 
+
 # -------------------------
 # LLAMADA A OLLAMA
 # -------------------------
@@ -174,9 +195,10 @@ def llamar_ollama(prompt: str, temperature: float = 0.3, timeout: int = 30) -> s
             detail="Error con el modelo IA"
         )
 
-# ------------------------------------------------
-# CLASIFICADOR 1–5 / no usa agentes solo clasifica
-# ------------------------------------------------
+
+# -------------------------
+# CLASIFICADOR 1–5
+# -------------------------
 def clasificar_nivel(texto: str) -> str:
     prompt = f"""
 Clasifica el siguiente mensaje en nivel de riesgo:
@@ -196,7 +218,7 @@ Mensaje:
 """
 
     try:
-        resultado = llamar_ollama(prompt, temperature=0, timeout=30)
+        resultado = llamar_ollama(prompt, temperature=0, timeout=120)
 
         if not resultado:
             return "1"
@@ -210,6 +232,7 @@ Mensaje:
     except Exception as e:
         print("Error en clasificación:", e)
         return "1"
+
 
 # -------------------------
 # SISTEMA EXPERTO (TRIAJE)
@@ -240,11 +263,29 @@ Instrucciones finales:
 """
 
     try:
-        respuesta = llamar_ollama(prompt, temperature=0.3, timeout=30)
+        respuesta = llamar_ollama(prompt, temperature=0.3, timeout=120)
         return respuesta if respuesta else "Lo siento, hubo un error generando la respuesta."
     except Exception as e:
         print("Error en generación:", e)
         return "Lo siento, mi conexión con el servidor de IA falló."
+
+
+# -------------------------
+# GUARDAR EN MONGO
+# -------------------------
+def guardar_interaccion(request: Request, texto: str, respuesta: str, nivel: str) -> str:
+    documento = {
+        "prompt": texto,
+        "respuesta": respuesta,
+        "nivel_detectado": nivel,
+        "model": MODEL_NAME,
+        "created_at": datetime.now(timezone.utc)
+    }
+
+    resultado = request.app.mongodb.interacciones.insert_one(documento)
+    print("Guardado en Mongo con ID:", resultado.inserted_id)
+    return str(resultado.inserted_id)
+
 
 # -------------------------
 # ENDPOINTS
@@ -256,34 +297,35 @@ def home():
         "config": {
             "ollama_host": OLLAMA_HOST,
             "ollama_url": OLLAMA_URL,
-            "model": MODEL_NAME
+            "model": MODEL_NAME,
+            "mongodb_url": MONGODB_URL,
+            "mongodb_db": MONGODB_DB
         }
     }
 
+
 @app.post("/chat")
-def chat(data: Prompt):
+def chat(data: Prompt, request: Request):
     texto = data.prompt.strip()
 
     if not texto:
         raise HTTPException(status_code=400, detail="Prompt vacío")
 
-    # Guardar historial
-    HISTORIAL.append({"user": texto})
-
-    # 1. Clasificar riesgo del usuario
     nivel = clasificar_nivel(texto)
     print("Nivel detectado:", nivel)
 
-    # 2. Generar respuesta con agente
     respuesta = generar_respuesta(nivel, texto)
 
-    # 3. Guardar respuesta
-    HISTORIAL.append({"assistant": respuesta})
+    try:
+        mongo_id = guardar_interaccion(request, texto, respuesta, nivel)
+    except Exception as e:
+        print("Error guardando en Mongo:", e)
+        raise HTTPException(status_code=500, detail="Error guardando la interacción en MongoDB")
 
-    # 4. Devolver respuesta
     return {
         "respuesta": respuesta,
         "info": {
-            "nivel_detectado": nivel
+            "nivel_detectado": nivel,
+            "mongo_id": mongo_id
         }
     }

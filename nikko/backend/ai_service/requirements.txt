@@ -1,4 +1,4 @@
 fastapi
 uvicorn
 requests
-pydantic
+pymongo[srv]>=4.13
