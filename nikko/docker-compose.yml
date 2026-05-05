@@ -21,15 +21,13 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    env_file:
+      - ./backend/ai_service/.env
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      - MODEL_NAME=nikko-ia
-      - MONGODB_URL=mongodb://mongo:27017
-      - MONGODB_DB=nikko
     restart: unless-stopped
     depends_on:
       - ollama
-      - mongo
 
   # 3. Servidor de Ollama
   ollama:
@@ -45,17 +43,7 @@ services:
       - OLLAMA_HOST=0.0.0.0:11434
       - OLLAMA_ORIGINS=*
 
-  # 4. MongoDB
-  mongo:
-    image: mongo:latest
-    container_name: mongo
-    ports:
-      - "27017:27017"
-    volumes:
-      - ./mongo_data:/data/db
-    restart: unless-stopped
-
-  # 5. Frontend
+  # 4. Frontend
   frontend:
     build:
       context: ./frontend
@@ -65,3 +53,17 @@ services:
     depends_on:
       - node_backend
     restart: unless-stopped
+
+  # 5. Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana_data:/var/lib/grafana
+    environment:
+      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
+    restart: unless-stopped
+    depends_on:
+      - ai_service
