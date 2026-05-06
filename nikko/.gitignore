@@ -71,3 +71,6 @@ mongo_data/
 *.jsonl
 !ai_service/views.json # Mantén este si es necesario para tu lógica
 
+# Grafana
+grafana_data/
+
