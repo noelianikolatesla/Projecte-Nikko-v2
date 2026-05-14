@@ -1,14 +1,9 @@
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from pymongo import MongoClient
 from datetime import datetime, timezone
-from typing import Optional
-from passlib.context import CryptContext
-from dotenv import load_dotenv
 import requests
 import os
-
-load_dotenv()
 
 app = FastAPI()
 
@@ -20,9 +15,9 @@ app = FastAPI()
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 MODEL_NAME = os.getenv("MODEL_NAME", "nikko-ia")
 
-# MongoDB Atlas / Mongo local
-# Atlas: mongodb+srv://usuario:password@cluster.mongodb.net/
-# Local: mongodb://localhost:27017
+# Mongo
+# En Docker:  mongodb://mongo:27017
+# En local:   mongodb://localhost:27017
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 MONGODB_DB = os.getenv("MONGODB_DB", "nikko")
 
@@ -31,39 +26,13 @@ OLLAMA_URL = f"{OLLAMA_HOST}/api/generate"
 
 
 # -------------------------
-# HASH DE CONTRASEÑAS
-# -------------------------
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-def hash_password(password: str) -> str:
-    if not password:
-        raise ValueError("La contraseña no puede estar vacía")
-
-    password = password.strip()
-
-    if len(password.encode("utf-8")) > 72:
-        raise ValueError("La contraseña no puede superar los 72 bytes")
-
-    return pwd_context.hash(password)
-
-
-# -------------------------
 # CONEXIÓN A MONGO
 # -------------------------
 @app.on_event("startup")
 def startup_db():
-    try:
-        app.mongodb_client = MongoClient(MONGODB_URL)
-        app.mongodb_client.admin.command("ping")
-        app.mongodb = app.mongodb_client[MONGODB_DB]
-
-        print("Conectado correctamente a MongoDB Atlas")
-        print(f"Base de datos: {MONGODB_DB}")
-
-    except Exception as e:
-        print("Error conectando a MongoDB:", e)
-        raise e
+    app.mongodb_client = MongoClient(MONGODB_URL)
+    app.mongodb = app.mongodb_client[MONGODB_DB]
+    print(f"Conectado a MongoDB en {MONGODB_URL}, base de datos: {MONGODB_DB}")
 
 
 @app.on_event("shutdown")
@@ -73,29 +42,10 @@ def shutdown_db():
 
 
 # -------------------------
-# MODELOS INPUT
+# MODELO INPUT
 # -------------------------
-class Ubicacion(BaseModel):
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    accuracy: Optional[float] = None
-
-
 class Prompt(BaseModel):
     prompt: str
-
-    # Datos del usuario
-    nick: str
-    password: str = Field(..., min_length=4, max_length=72)
-
-    # Ubicación recogida por permisos de la web
-    ubicacion: Optional[Ubicacion] = None
-
-    # Estos campos pueden venir como null normalmente.
-    # Solo se guardarán realmente si el nivel es crítico.
-    centro_educativo: Optional[str] = None
-    telefono_tutor: Optional[str] = None
-    correo_electronico: Optional[str] = None
 
 
 # -------------------------
@@ -321,80 +271,15 @@ Instrucciones finales:
 
 
 # -------------------------
-# LABEL DEL NIVEL
-# -------------------------
-def obtener_label_nivel(nivel: int) -> str:
-    labels = {
-        1: "leve",
-        2: "medio",
-        3: "grave",
-        4: "muy grave",
-        5: "critico"
-    }
-
-    return labels.get(nivel, "desconocido")
-
-
-# -------------------------
 # GUARDAR EN MONGO
 # -------------------------
-def guardar_interaccion(request: Request, data: Prompt, respuesta: str, nivel: str) -> str:
-    nivel_int = int(nivel)
-
-    # Según lo acordado:
-    # centro_educativo, telefono_tutor y correo_electronico
-    # solo se guardan cuando el nivel es crítico.
-    es_critico = nivel_int == 5
-
+def guardar_interaccion(request: Request, texto: str, respuesta: str, nivel: str) -> str:
     documento = {
-        "prompt": data.prompt,
+        "prompt": texto,
         "respuesta": respuesta,
-
-        "usuario": {
-            "nick": data.nick,
-            "password_hash": hash_password(data.password)
-        },
-
-        "ubicacion": {
-            "latitude": data.ubicacion.latitude if data.ubicacion else None,
-            "longitude": data.ubicacion.longitude if data.ubicacion else None,
-            "accuracy": data.ubicacion.accuracy if data.ubicacion else None
-        },
-
-        "datos_criticos": {
-            "centro_educativo": data.centro_educativo if es_critico else None,
-            "telefono_tutor": data.telefono_tutor if es_critico else None,
-            "correo_electronico": data.correo_electronico if es_critico else None
-        },
-
-        "nivel_detectado": nivel_int,
-        "nivel_label": obtener_label_nivel(nivel_int),
-
-        "flags": {
-            "requiere_revision": nivel_int >= 2,
-            "alerta_prioritaria": nivel_int >= 3,
-            "emergencia": nivel_int >= 4,
-            "critico": nivel_int == 5
-        },
-
+        "nivel_detectado": nivel,
         "model": MODEL_NAME,
-
-        "metadata": {
-            "ip": request.client.host if request.client else None,
-            "user_agent": request.headers.get("user-agent"),
-            "endpoint": str(request.url.path),
-            "method": request.method
-        },
-
-        "estado": {
-            "revisado": False,
-            "revisado_por": None,
-            "fecha_revision": None,
-            "notas_orientador": None
-        },
-
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc)
+        "created_at": datetime.now(timezone.utc)
     }
 
     resultado = request.app.mongodb.interacciones.insert_one(documento)
@@ -422,7 +307,8 @@ def home():
 @app.post("/chat")
 def chat(data: Prompt, request: Request):
     texto = data.prompt.strip()
-    print("Texto recibido:", texto)
+    print("texto recibido:", texto)
+    
 
     if not texto:
         raise HTTPException(status_code=400, detail="Prompt vacío")
@@ -434,67 +320,34 @@ def chat(data: Prompt, request: Request):
     print("Respuesta generada:", respuesta)
 
     try:
-        mongo_id = guardar_interaccion(request, data, respuesta, nivel)
+        mongo_id = guardar_interaccion(request, texto, respuesta, nivel)
         print("Interacción guardada en Mongo con ID:", mongo_id)
-
     except Exception as e:
         print("Error guardando en Mongo:", e)
-        raise HTTPException(
-            status_code=500,
-            detail="Error guardando la interacción en MongoDB"
-        )
-
-    nivel_int = int(nivel)
+        raise HTTPException(status_code=500, detail="Error guardando la interacción en MongoDB")
 
     return {
         "respuesta": respuesta,
         "info": {
-            "nivel_detectado": nivel_int,
-            "nivel_label": obtener_label_nivel(nivel_int),
+            "nivel_detectado": nivel,
             "mongo_id": mongo_id
         }
     }
 
 
-# -------------------------
-# ENDPOINT GRAFANA
-# -------------------------
+
+# endpoint grafana
 @app.get("/grafana/interacciones")
 def grafana_interacciones(request: Request):
-    datos = list(
-        request.app.mongodb.interacciones.find(
-            {},
-            {
-                "_id": 0,
-                "created_at": 1,
-                "nivel_detectado": 1,
-                "nivel_label": 1,
-                "flags": 1,
-                "usuario.nick": 1,
-                "datos_criticos.centro_educativo": 1
-            }
-        )
-    )
+
+    datos = list(request.app.mongodb.interacciones.find())
 
     resultado = []
 
     for item in datos:
-        created_at = item.get("created_at")
-        nivel_detectado = item.get("nivel_detectado", 1)
-
-        if not created_at:
-            continue
-
         resultado.append({
-            "time": int(created_at.timestamp() * 1000),
-            "nivel": int(nivel_detectado),
-            "nivel_label": item.get("nivel_label"),
-            "nick": item.get("usuario", {}).get("nick"),
-            "centro_educativo": item.get("datos_criticos", {}).get("centro_educativo"),
-            "requiere_revision": item.get("flags", {}).get("requiere_revision", False),
-            "alerta_prioritaria": item.get("flags", {}).get("alerta_prioritaria", False),
-            "emergencia": item.get("flags", {}).get("emergencia", False),
-            "critico": item.get("flags", {}).get("critico", False)
+            "time": int(item["created_at"].timestamp() * 1000),
+            "nivel": int(item["nivel_detectado"])
         })
 
     return resultado

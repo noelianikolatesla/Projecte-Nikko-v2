@@ -2,6 +2,7 @@ import React from "react";
 import { Routes, Route } from "react-router-dom";
 import Card from "./components/Card";
 import Chat from "./components/Chat";
+import Info from "./components/Info";
 
 export default function App() {
   const page = {
@@ -27,6 +28,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Card />} />
         <Route path="/chat" element={<Chat />} />
+        <Route path="/info" element={<Info />} />
       </Routes>
     </div>
   );
