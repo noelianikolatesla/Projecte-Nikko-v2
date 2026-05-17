@@ -1,353 +1,333 @@
+"""
+main.py - API FastAPI del backend Nikko.
+
+Este es el UNICO punto de entrada para el equipo de frontend.
+
+Flujo del endpoint /chat:
+  1. Frontend envia {"prompt": "..."}
+  2. validar_input()      -> rechaza si es fuera de alcance, jailbreak, etc.
+  3. llamar_modelo()      -> llama a Nikko via Ollama (local o RunPod)
+  4. parsear_respuesta()  -> extrae JSON del texto crudo
+  5. aplicar_guardrails() -> corrige nivel, categoria, recursos, etc.
+  6. guardar en Mongo
+  7. devolver al frontend
+
+Para arrancar:
+    uvicorn main:app --host 0.0.0.0 --port 8000
+"""
+
+import time
+from datetime import datetime, timezone
+
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pymongo import MongoClient
-from datetime import datetime, timezone
-import requests
-import os
 
-app = FastAPI()
-
-# -------------------------
-# CONFIGURACIÓN FLEXIBLE (Docker / local)
-# -------------------------
-# En Docker:  OLLAMA_HOST=http://ollama:11434
-# En local:   OLLAMA_HOST=http://localhost:11434
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-MODEL_NAME = os.getenv("MODEL_NAME", "nikko-ia")
-
-# Mongo
-# En Docker:  mongodb://mongo:27017
-# En local:   mongodb://localhost:27017
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-MONGODB_DB = os.getenv("MONGODB_DB", "nikko")
-
-# Endpoint real de generación de Ollama
-OLLAMA_URL = f"{OLLAMA_HOST}/api/generate"
-
-
-# -------------------------
-# CONEXIÓN A MONGO
-# -------------------------
-@app.on_event("startup")
-def startup_db():
-    app.mongodb_client = MongoClient(MONGODB_URL)
-    app.mongodb = app.mongodb_client[MONGODB_DB]
-    print(f"Conectado a MongoDB en {MONGODB_URL}, base de datos: {MONGODB_DB}")
+# Modulos propios
+from .config import (
+    MONGODB_URL,
+    MONGODB_DB,
+    MONGODB_COLLECTION,
+    NIKKO_MODEL_NAME,
+    ENTORNO,
+    imprimir_config,
+)
+from .consumir_nikko import (
+    llamar_modelo,
+    ping,
+    modelo_disponible,
+    ModeloTimeoutError,
+    ModeloConexionError,
+    _resolver_ollama_host,
+)
+from .guardrails import (
+    validar_input,
+    parsear_respuesta_modelo,
+    aplicar_guardrails,
+    respuesta_input_invalido,
+    MENSAJE_ERROR_TECNICO,
+)
 
 
-@app.on_event("shutdown")
-def shutdown_db():
-    app.mongodb_client.close()
-    print("Conexión a MongoDB cerrada")
+# ============================================================
+# APLICACION FASTAPI
+# ============================================================
+
+app = FastAPI(
+    title="Nikko - Asistente de prevencion de bullying",
+    description="API que conecta el frontend con el modelo Nikko fine-tuneado",
+    version="2.0.0",
+)
+
+# CORS para que el frontend (otro dominio) pueda llamar
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-# -------------------------
-# MODELO INPUT
-# -------------------------
+# ============================================================
+# MODELOS DE DATOS
+# ============================================================
+
 class Prompt(BaseModel):
+    """Lo que envia el frontend a /chat"""
     prompt: str
 
 
-# -------------------------
-# AGENTES 5 NIVELES
-# -------------------------
-AGENTE_NIVEL_1 = """
-Eres un asistente especializado en la prevención del acoso escolar, actuando como el primer nivel de respuesta ante situaciones leves.
+# ============================================================
+# EVENTOS DE STARTUP / SHUTDOWN
+# ============================================================
 
-OBJETIVO: Ofrecer apoyo inmediato, empático y seguro a víctimas de incidentes aislados.
+@app.on_event("startup")
+def startup():
+    """Se ejecuta al arrancar el servidor."""
+    imprimir_config()
 
-FILTRO DE DOMINIO (ESTRICTO):
-Solo puedes responder sobre: bullying, acoso escolar, ciberacoso y apoyo emocional derivado.
+    # Conectar a MongoDB
+    app.mongodb_client = MongoClient(MONGODB_URL)
+    app.mongodb = app.mongodb_client[MONGODB_DB]
+    app.mongo_collection = app.mongodb[MONGODB_COLLECTION]
+    print(f"[OK] MongoDB: {MONGODB_DB}.{MONGODB_COLLECTION}")
 
-Si el mensaje no tiene relación, responde exclusivamente:
-"Solo puedo ayudarte con situaciones relacionadas con el bullying o el acoso. Si estás viviendo algo así, cuéntamelo y trataré de ayudarte."
+    # Comprobar conexion con Ollama (no bloqueante)
+    # Comprobar conexion con Ollama (no bloqueante)
+    host_real = _resolver_ollama_host()
 
-NORMAS DE COMPORTAMIENTO:
-- Tono: empático, cercano y protector.
-- Privacidad: trata al usuario con respeto, sabiendo que su identidad está protegida y anonimizada.
-- Sin redundancia: no pidas más información ni detalles innecesarios.
-- Prohibido: no juzgar, no culpar y no usar frases genéricas.
-
-PROTOCOLO DE RESPUESTA (NIVEL 1: LEVE):
-Este nivel se aplica a insultos puntuales, burlas ocasionales o comentarios hirientes aislados.
-
-Estructura de tu respuesta:
-1. Validación: confirma que sus sentimientos son válidos.
-2. Acción directa: da 2 consejos prácticos.
-3. Seguridad: explica que el evento queda registrado para vigilar si se repite.
-4. Cierre: anima a mantener la calma y hablar con un adulto de confianza si el malestar persiste.
-
-RESTRICCIÓN DE SEGURIDAD:
-- En este nivel, NUNCA menciones teléfonos de emergencia, autoridades ni protocolos de crisis.
-"""
-
-AGENTE_NIVEL_2 = """
-ROL: Eres un asistente especializado en la gestión de situaciones de acoso recurrente.
-
-OBJETIVO:
-Ofrecer estrategias de afrontamiento y preparar al usuario para buscar apoyo formal.
-
-PROTOCOLO DE RESPUESTA (NIVEL 2: RECURRENTE):
-Este nivel se aplica a insultos repetidos, humillaciones constantes o burlas continuadas.
-
-Estructura de tu respuesta:
-1. Validación firme: reconoce que la repetición no es aceptable y que su malestar está justificado.
-2. Estrategia de protección: da 2 o 3 consejos para poner límites o alejarse de dinámicas tóxicas.
-3. Acción de sistema: informa de que el sistema ha detectado persistencia y que quedará registrado para revisión por orientación o tutoría.
-4. Derivación recomendada: sugiere hablar con un profesor, tutor, orientador o adulto responsable.
-
-RESTRICCIÓN DE SEGURIDAD:
-- NO pidas detalles adicionales.
-- Mantén un tono firme, protector y claro.
-"""
-
-AGENTE_NIVEL_3 = """
-ROL: Eres un asistente de respuesta rápida para situaciones de alta gravedad.
-
-TONO:
-Protector, serio y resolutivo.
-
-PROTOCOLO DE RESPUESTA (NIVEL 3: ALERTA):
-Este nivel se aplica a amenazas, violencia física, acoso continuado o miedo intenso.
-
-Estructura de tu respuesta:
-1. Apoyo protector: transmite seguridad inmediata.
-2. Notificación de alerta: indica que la situación ha sido marcada como prioritaria para intervención urgente por parte del centro.
-3. Recursos externos obligatorios:
-   - Teléfono gratuito de ayuda: 900 018 018
-   - Enlace oficial:
-     https://www.educacionfpydeportes.gob.es/mc/sgctie/acoso-escolar.html
-4. Instrucción de seguridad: recomienda buscar físicamente a un adulto de confianza del centro de manera inmediata.
-
-IMPORTANTE:
-- No inventes acciones que el sistema no esté ejecutando realmente.
-- Habla de "alerta prioritaria" o "intervención urgente recomendada", no de contacto real con autoridades si no existe.
-"""
-
-AGENTE_NIVEL_4 = """
-ROL: Eres el protocolo de emergencia de Nikko para situaciones de riesgo vital o autolesión.
-
-TU RESPUESTA DEBE SER:
-Inmediata, breve, clara y centrada en la preservación de la vida.
-
-PROTOCOLO DE RESPUESTA (NIVEL 4: EMERGENCIA):
-Este nivel se aplica a ideas de autolesión, riesgo de suicidio o peligro físico inminente.
-
-Estructura de tu respuesta:
-1. Respuesta de choque:
-   "Estamos contigo. Tu vida y tu seguridad son lo más importante en este momento."
-2. Activación de emergencia:
-   Indica que esta situación requiere ayuda urgente e inmediata.
-3. Canal directo de ayuda:
-   - Llama ahora mismo al 112
-   - O al 024 (Línea de atención a la conducta suicida)
-   - No te quedes solo si es posible
-   - Busca ahora mismo a un adulto de confianza
-4. Cierre de contención:
-   Mantén un mensaje breve de apoyo y esperanza.
-
-RESTRICCIÓN DE SEGURIDAD:
-- No hagas análisis largos.
-- No hagas preguntas innecesarias.
-- No inventes que ya se ha contactado con emergencias si tu sistema no lo hace de verdad.
-"""
-
-AGENTE_NIVEL_5 = """
-Eres un sistema de emergencia psicológica.
-
-CONTEXTO:
-- Riesgo crítico o vital
-- Respuesta urgente y directa
-- Sin análisis largo
-- Prioridad absoluta: proteger al usuario
-
-INSTRUCCIONES OBLIGATORIAS:
-- Indica llamar al 112 inmediatamente
-- Indica contactar con un adulto de confianza ahora mismo
-- Indica no quedarse solo
-- Mantén una respuesta corta, clara y contundente
-- No inventes acciones técnicas que el sistema no esté ejecutando realmente
-"""
-
-
-# -------------------------
-# LLAMADA A OLLAMA
-# -------------------------
-def llamar_ollama(prompt: str, temperature: float = 0.3, timeout: int = 30) -> str:
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": MODEL_NAME,
-                "prompt": prompt,
-                "stream": False,
-                "temperature": temperature
-            },
-            timeout=timeout
-        )
-        response.raise_for_status()
-        return response.json().get("response", "").strip()
-
-    except requests.exceptions.RequestException as e:
-        print("Error Ollama:", e)
-        raise HTTPException(
-            status_code=500,
-            detail="Error con el modelo IA"
-        )
-
-
-# -------------------------
-# CLASIFICADOR 1–5
-# -------------------------
-def clasificar_nivel(texto: str) -> str:
-    prompt = f"""
-Clasifica el siguiente mensaje en nivel de riesgo:
-
-1 = leve
-2 = medio
-3 = grave
-4 = muy grave
-5 = crítico
-
-Responde SOLO un número del 1 al 5.
-No expliques nada.
-No añadas texto extra.
-
-Mensaje:
-{texto}
-"""
-
-    try:
-        resultado = llamar_ollama(prompt, temperature=0, timeout=120)
-
-        if not resultado:
-            return "1"
-
-        for char in resultado.strip():
-            if char in ["1", "2", "3", "4", "5"]:
-                return char
-
-        return "1"
-
-    except Exception as e:
-        print("Error en clasificación:", e)
-        return "1"
-
-
-# -------------------------
-# SISTEMA EXPERTO (TRIAJE)
-# -------------------------
-def generar_respuesta(nivel: str, mensaje: str) -> str:
-    if nivel == "1":
-        agente = AGENTE_NIVEL_1
-    elif nivel == "2":
-        agente = AGENTE_NIVEL_2
-    elif nivel == "3":
-        agente = AGENTE_NIVEL_3
-    elif nivel == "4":
-        agente = AGENTE_NIVEL_4
+    if ping():
+        print(f"[OK] Ollama responde en {host_real}")
+        if modelo_disponible():
+            print(f"[OK] Modelo {NIKKO_MODEL_NAME} cargado")
+        else:
+            print(f"[!] Modelo {NIKKO_MODEL_NAME} NO esta cargado")
+            print(f"    Ejecuta: ollama create {NIKKO_MODEL_NAME} -f Modelfile")
     else:
-        agente = AGENTE_NIVEL_5
+        print(f"[!] Ollama NO responde en {host_real}")
 
-    prompt = f"""
-{agente}
-
-Mensaje del usuario:
-{mensaje}
-
-Instrucciones finales:
-- Responde en español.
-- Responde de forma natural, clara y útil.
-- No repitas literalmente el mensaje del usuario.
-- No inventes acciones automáticas del sistema que no existan realmente.
-"""
-
-    try:
-        respuesta = llamar_ollama(prompt, temperature=0.3, timeout=120)
-        return respuesta if respuesta else "Lo siento, hubo un error generando la respuesta."
-    except Exception as e:
-        print("Error en generación:", e)
-        return "Lo siento, mi conexión con el servidor de IA falló."
+@app.on_event("shutdown")
+def shutdown():
+    app.mongodb_client.close()
+    print("[OK] MongoDB cerrado")
 
 
-# -------------------------
-# GUARDAR EN MONGO
-# -------------------------
-def guardar_interaccion(request: Request, texto: str, respuesta: str, nivel: str) -> str:
+# ============================================================
+# UTILIDADES INTERNAS
+# ============================================================
+
+def _guardar_en_mongo(request: Request, prompt: str, respuesta: dict, duracion_ms: int) -> str:
+    """
+    Guarda la interaccion completa en MongoDB.
+    Guarda el JSON entero de Nikko + metadatos.
+    """
     documento = {
-        "prompt": texto,
-        "respuesta": respuesta,
-        "nivel_detectado": nivel,
-        "model": MODEL_NAME,
-        "created_at": datetime.now(timezone.utc)
+        "prompt": prompt,
+        "nivel": respuesta.get("nivel"),
+        "categoria": respuesta.get("categoria"),
+        "accion": respuesta.get("accion"),
+        "recursos": respuesta.get("recursos", []),
+        "telefonos": respuesta.get("telefonos", []),
+        "requiere_alerta": respuesta.get("requiere_alerta", False),
+        "abrir_formulario": respuesta.get("abrir_formulario"),
+        "respuesta_usuario": respuesta.get("respuesta_usuario"),
+        "model": NIKKO_MODEL_NAME,
+        "source": ENTORNO,
+        "duracion_ms": duracion_ms,
+        "created_at": datetime.now(timezone.utc),
     }
-
-    resultado = request.app.mongodb.interacciones.insert_one(documento)
-    print("Guardado en Mongo con ID:", resultado.inserted_id)
+    resultado = request.app.mongo_collection.insert_one(documento)
     return str(resultado.inserted_id)
 
 
-# -------------------------
+# ============================================================
 # ENDPOINTS
-# -------------------------
+# ============================================================
+
 @app.get("/")
 def home():
+    """Informacion general de la API."""
     return {
-        "status": "API funcionando 🚀",
-        "config": {
-            "ollama_host": OLLAMA_HOST,
-            "ollama_url": OLLAMA_URL,
-            "model": MODEL_NAME,
-            "mongodb_url": MONGODB_URL,
-            "mongodb_db": MONGODB_DB
-        }
+        "status": "Nikko API funcionando",
+        "version": "2.0.0",
+        "entorno": ENTORNO,
+        "modelo": NIKKO_MODEL_NAME,
+        "endpoints": [
+            "GET  /",
+            "POST /chat",
+            "GET  /health",
+            "GET  /grafana/interacciones",
+            "GET  /grafana/stats",
+        ],
+    }
+
+
+@app.get("/health")
+def health():
+    """Healthcheck para Docker, Kubernetes o Grafana."""
+    ollama_ok = ping()
+    modelo_ok = modelo_disponible() if ollama_ok else False
+    estado = "ok" if (ollama_ok and modelo_ok) else "degraded"
+
+    return {
+        "status": estado,
+        "ollama": ollama_ok,
+        "modelo_cargado": modelo_ok,
+        "entorno": ENTORNO,
+        "modelo": NIKKO_MODEL_NAME,
     }
 
 
 @app.post("/chat")
 def chat(data: Prompt, request: Request):
-    texto = data.prompt.strip()
-    print("texto recibido:", texto)
-    
+    """
+    Endpoint principal: recibe mensaje del usuario y devuelve
+    la respuesta de Nikko con guardrails aplicados.
 
-    if not texto:
-        raise HTTPException(status_code=400, detail="Prompt vacío")
+    Frontend envia:
+        POST /chat
+        Content-Type: application/json
+        {"prompt": "Me han amenazado con pegarme"}
 
-    nivel = clasificar_nivel(texto)
-    print("Nivel detectado:", nivel)
-
-    respuesta = generar_respuesta(nivel, texto)
-    print("Respuesta generada:", respuesta)
-
-    try:
-        mongo_id = guardar_interaccion(request, texto, respuesta, nivel)
-        print("Interacción guardada en Mongo con ID:", mongo_id)
-    except Exception as e:
-        print("Error guardando en Mongo:", e)
-        raise HTTPException(status_code=500, detail="Error guardando la interacción en MongoDB")
-
-    return {
-        "respuesta": respuesta,
-        "info": {
-            "nivel_detectado": nivel,
-            "mongo_id": mongo_id
+    Frontend recibe (los 8 campos de Nikko + metadatos):
+        {
+            "nivel": 3,
+            "categoria": "amenaza_de_violencia",
+            "accion": "proteccion_inmediata_y_derivacion",
+            "recursos": ["jefatura", "conserjeria", "familia"],
+            "telefonos": ["900018018"],
+            "requiere_alerta": true,
+            "abrir_formulario": "aviso",
+            "respuesta_usuario": "Lo que me cuentas es muy grave...",
+            "mongo_id": "...",
+            "duracion_ms": 2340
         }
-    }
+    """
+    prompt = (data.prompt or "").strip()
+    inicio = time.time()
+
+    # ---- 1. Validar entrada con TU guardrails -----------------------
+    rechazo = validar_input(prompt)
+    if rechazo is not None:
+        # validar_input devuelve un mensaje string si rechaza
+        print(f"[VALIDACION] Mensaje rechazado: {rechazo[:80]}")
+        respuesta = respuesta_input_invalido(rechazo)
+
+        try:
+            mongo_id = _guardar_en_mongo(request, prompt, respuesta, 0)
+            respuesta["mongo_id"] = mongo_id
+        except Exception as e:
+            print(f"[!] Error guardando en Mongo: {e}")
+            respuesta["mongo_id"] = None
+
+        respuesta["duracion_ms"] = 0
+        return respuesta
+
+    # ---- 2. Llamar al modelo Nikko --------------------------
+    try:
+        texto_crudo = llamar_modelo(prompt)
+    except ModeloTimeoutError as e:
+        print(f"[TIMEOUT] {e}")
+        duracion_ms = int((time.time() - inicio) * 1000)
+        return {
+            "nivel": -1,
+            "categoria": "error_sistema",
+            "accion": "reintentar",
+            "recursos": [],
+            "telefonos": [],
+            "requiere_alerta": False,
+            "abrir_formulario": None,
+            "respuesta_usuario": MENSAJE_ERROR_TECNICO,
+            "duracion_ms": duracion_ms,
+        }
+    except ModeloConexionError as e:
+        print(f"[CONEXION] {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="El modelo Nikko no esta disponible en este momento",
+        )
+
+    # ---- 3. Parsear respuesta del modelo --------------------
+    data_modelo = parsear_respuesta_modelo(texto_crudo)
+
+    # ---- 4. Aplicar guardrails (con mensaje del usuario) ----
+    respuesta = aplicar_guardrails(data_modelo, mensaje_usuario=prompt)
+
+    duracion_ms = int((time.time() - inicio) * 1000)
+
+    # ---- 5. Guardar en MongoDB ------------------------------
+    try:
+        mongo_id = _guardar_en_mongo(request, prompt, respuesta, duracion_ms)
+        respuesta["mongo_id"] = mongo_id
+    except Exception as e:
+        print(f"[!] Error guardando en Mongo: {e}")
+        respuesta["mongo_id"] = None
+
+    respuesta["duracion_ms"] = duracion_ms
+
+    print(f"[OK] /chat - nivel={respuesta.get('nivel')} duracion={duracion_ms}ms")
+
+    return respuesta
 
 
+# ============================================================
+# ENDPOINTS PARA GRAFANA
+# ============================================================
 
-# endpoint grafana
 @app.get("/grafana/interacciones")
 def grafana_interacciones(request: Request):
-
-    datos = list(request.app.mongodb.interacciones.find())
+    """
+    Endpoint para Grafana: devuelve todas las interacciones
+    en formato compatible con paneles temporales.
+    """
+    datos = list(request.app.mongo_collection.find())
 
     resultado = []
-
     for item in datos:
         resultado.append({
             "time": int(item["created_at"].timestamp() * 1000),
-            "nivel": int(item["nivel_detectado"])
+            "nivel": int(item.get("nivel", 0)) if item.get("nivel") is not None else 0,
+            "categoria": item.get("categoria", ""),
+            "duracion_ms": item.get("duracion_ms", 0),
         })
 
     return resultado
+
+
+@app.get("/grafana/stats")
+def grafana_stats(request: Request):
+    """
+    Estadisticas agregadas para dashboard:
+      - Total de interacciones
+      - Distribucion por nivel
+      - Distribucion por categoria
+      - Latencia promedio
+    """
+    total = request.app.mongo_collection.count_documents({})
+
+    pipeline_nivel = [
+        {"$group": {"_id": "$nivel", "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
+    ]
+    por_nivel = list(request.app.mongo_collection.aggregate(pipeline_nivel))
+
+    pipeline_cat = [
+        {"$group": {"_id": "$categoria", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]
+    por_categoria = list(request.app.mongo_collection.aggregate(pipeline_cat))
+
+    pipeline_lat = [
+        {"$group": {"_id": None, "avg_ms": {"$avg": "$duracion_ms"}}},
+    ]
+    lat = list(request.app.mongo_collection.aggregate(pipeline_lat))
+    latencia_promedio = lat[0]["avg_ms"] if lat else 0
+
+    return {
+        "total_interacciones": total,
+        "por_nivel": [{"nivel": x["_id"], "count": x["count"]} for x in por_nivel],
+        "por_categoria": [{"categoria": x["_id"], "count": x["count"]} for x in por_categoria],
+        "latencia_promedio_ms": round(latencia_promedio or 0, 2),
+    }

@@ -204,8 +204,18 @@ def aplicar_guardrails(respuesta: dict, mensaje_usuario: str = "") -> dict:
         if respuesta.get("categoria") not in CATEGORIAS_VALIDAS:
             respuesta["categoria"] = "conflicto_puntual"
 
-        if respuesta.get("accion") not in ACCIONES_VALIDAS:
-            respuesta["accion"] = "escucha_activa"
+        accion = respuesta.get("accion")
+
+        # Si el modelo devuelve una lista, usamos el primer valor.
+        # Ejemplo:
+        # ["denuncia_inmediata", "familia"] -> "denuncia_inmediata"
+        if isinstance(accion, list):
+            accion = accion[0] if accion else None
+
+        if accion not in ACCIONES_VALIDAS:
+            accion = "escucha_activa"
+
+        respuesta["accion"] = accion
 
     elif nivel == 2:
         respuesta["requiere_alerta"] = True
@@ -229,11 +239,19 @@ def aplicar_guardrails(respuesta: dict, mensaje_usuario: str = "") -> dict:
         elif categoria_actual == "conflicto_recurrente" and es_acoso_recurrente(texto_usuario):
             respuesta["categoria"] = "acoso_recurrente"
 
-        if respuesta.get("accion") not in ACCIONES_VALIDAS:
+        accion = respuesta.get("accion")
+
+        # Si el modelo devuelve una lista, usamos el primer valor.
+        if isinstance(accion, list):
+            accion = accion[0] if accion else None
+
+        if accion not in ACCIONES_VALIDAS:
             if respuesta["categoria"] == "ciberacoso_recurrente":
-                respuesta["accion"] = "recopilar_pruebas_y_derivar"
+                accion = "recopilar_pruebas_y_derivar"
             else:
-                respuesta["accion"] = "derivacion_interna"
+                accion = "derivacion_interna"
+
+        respuesta["accion"] = accion
 
         if not respuesta["recursos"]:
             if respuesta["categoria"] == "ciberacoso_recurrente":
