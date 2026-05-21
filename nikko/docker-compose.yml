@@ -1,5 +1,4 @@
 services:
-  # 1. Servidor Node.js
   node_backend:
     build:
       context: ./backend/node_app
@@ -14,7 +13,6 @@ services:
     depends_on:
       - ai_service
 
-  # 2. Servicio de IA (Python/FastAPI)
   ai_service:
     build:
       context: ./backend/ai_service
@@ -22,16 +20,20 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - OLLAMA_HOST=http://ollama:11434
-      - MODEL_NAME=nikko-ia
-      - MONGODB_URL=mongodb://mongo:27017
-      - MONGODB_DB=nikko
+      - OLLAMA_HOST=${OLLAMA_FALLBACK_HOST}
+      - OLLAMA_FALLBACK_HOST=
+      - NIKKO_MODEL_NAME=${NIKKO_MODEL_NAME}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT}
+      - MONGODB_URL=${MONGODB_URL}
+      - MONGODB_DB=${MONGODB_DB}
+      - MONGODB_COLLECTION=${MONGODB_COLLECTION}
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
     depends_on:
       - ollama
-      - mongo
 
-  # 3. Servidor de Ollama
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -45,17 +47,6 @@ services:
       - OLLAMA_HOST=0.0.0.0:11434
       - OLLAMA_ORIGINS=*
 
-  # 4. MongoDB
-  mongo:
-    image: mongo:latest
-    container_name: mongo
-    ports:
-      - "27017:27017"
-    volumes:
-      - ./mongo_data:/data/db
-    restart: unless-stopped
-
-  # 5. Frontend
   frontend:
     build:
       context: ./frontend
@@ -64,8 +55,7 @@ services:
       - "8080:80"
     depends_on:
       - node_backend
-    restart: unless-stopped 
-
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana:latest

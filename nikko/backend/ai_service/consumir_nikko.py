@@ -14,7 +14,7 @@ Devuelve TEXTO CRUDO. El parseo de JSON lo hace guardrails.parsear_respuesta_mod
 import requests
 import json
 
-from .config import (
+from config import (
     OLLAMA_HOST,
     OLLAMA_FALLBACK_HOST,
     NIKKO_MODEL_NAME,
@@ -84,7 +84,7 @@ def llamar_modelo(prompt: str) -> str:
     print(f"[INFO] Usando Ollama en: {url}")
     try:
         response = requests.post(
-            OLLAMA_GENERATE_URL,
+            url,
             json={
                 "model": NIKKO_MODEL_NAME,
                 "prompt": prompt.strip(),

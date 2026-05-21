@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from pymongo import MongoClient
 
 # Modulos propios
-from .config import (
+from config import (
     MONGODB_URL,
     MONGODB_DB,
     MONGODB_COLLECTION,
@@ -33,7 +33,7 @@ from .config import (
     ENTORNO,
     imprimir_config,
 )
-from .consumir_nikko import (
+from consumir_nikko import (
     llamar_modelo,
     ping,
     modelo_disponible,
@@ -41,7 +41,7 @@ from .consumir_nikko import (
     ModeloConexionError,
     _resolver_ollama_host,
 )
-from .guardrails import (
+from guardrails import (
     validar_input,
     parsear_respuesta_modelo,
     aplicar_guardrails,
